@@ -1,0 +1,9 @@
+{
+  "input": "ImageInput",
+  "output": "OutputPath",
+  "baseurl": "https://api.openai.com/v1",
+  "api": "YOUR_NEW_API_KEY",
+  "model": "gpt-4-vision-preview",
+  "bind": 5,
+  "translateTo": "简体中文"
+}
