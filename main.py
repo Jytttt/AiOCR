@@ -3,11 +3,10 @@
 
 import os
 import base64
-import requests
 import json
 import re
 from pathlib import Path
-
+import openai
 
 
 def extract_text_from_images(image_paths, base_url, api_key, model, translate_to):
@@ -46,36 +45,23 @@ def extract_text_from_images(image_paths, base_url, api_key, model, translate_to
             }
         })
 
-    # 准备 API 请求头
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
-    # 准备 API 请求载荷
-    payload = {
-        "model": model,
-        "messages": [
-            {
+    try:
+        # 使用OpenAI客户端代替requests
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        
+        # 发送API请求
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{
                 "role": "user",
                 "content": content
-            }
-        ],
-        "max_tokens": 1_048_576
-    }
-
-    try:
-        response = requests.post(
-            f"{base_url}/chat/completions",
-            headers=headers,
-            json=payload
+            }],
+            max_tokens=1_048_576
         )
-        response.raise_for_status()
-        result = response.json()
-
+        
         # 从响应中提取组合文本
-        if "choices" in result and len(result["choices"]) > 0:
-            combined_text = result["choices"][0]["message"]["content"]
+        if response.choices and len(response.choices) > 0:
+            combined_text = response.choices[0].message.content
 
             # 使用自定义标记分割文本
             pattern = r'###IMAGE_\d+###'
@@ -96,7 +82,7 @@ def extract_text_from_images(image_paths, base_url, api_key, model, translate_to
         else:
             return [""] * len(image_paths)
 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"API 调用期间发生错误: {str(e)}")
         return [""] * len(image_paths)
 
