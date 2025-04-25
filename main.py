@@ -4,6 +4,7 @@
 import os
 import yaml # 导入 yaml 库
 from pathlib import Path
+import concurrent.futures  # 添加并发处理库
 
 # 导入新的客户端模块
 import openai_client
@@ -13,7 +14,7 @@ import genai_client # 取消注释 GenAI 客户端导入
 def process_directory(input_dir, output_dir, client_type,
                       openai_base_url, openai_api_key, openai_model,
                       genai_api_key, genai_model,
-                      bind=1, translate_to=None):
+                      bind=1, translate_to=None, max_workers=5, timeout=120):  # 添加并发参数
     """
     处理输入目录中的所有图片，并将提取的文本保存到输出目录中。
 
@@ -28,6 +29,8 @@ def process_directory(input_dir, output_dir, client_type,
         genai_model (str): 要使用的 GenAI 模型名称。
         bind (int): 在单个 API 请求中处理的图片数量 (默认为 1)。
         translate_to (str): 要翻译的目标语言。
+        max_workers (int): 并发处理的最大工作线程数 (默认为5)。
+        timeout (int): API请求的超时时间（秒），默认120秒。
     """
     # 如果输出目录不存在，则创建它
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -46,60 +49,86 @@ def process_directory(input_dir, output_dir, client_type,
     selectModel = f"{openai_model if client_type == 'openai' else genai_model}"
     print(f"找到 {len(image_files)} 张图片需要处理,调用 {client_type} : {selectModel}")
 
-    # 以 'bind' 大小的批次处理图片
-    for i in range(0, len(image_files), bind):
-        batch = image_files[i:i+bind]
+    # 定义处理单个批次的函数
+    def process_batch(batch_idx, batch):
         batch_paths = [os.path.join(input_dir, img) for img in batch]
+        print(f"正在处理第 {batch_idx + 1} 批，包含 {len(batch)} 张图片...")
 
-        print(f"正在处理第 {i//bind + 1} 批，包含 {len(batch)} 张图片...")
-
-        # 从批处理的图片中提取文本
         try:
             extracted_texts = []
             if client_type == 'openai':
                  # 调用 OpenAI 客户端函数
                 if not openai_api_key:
                     print("错误：OpenAI API 密钥未提供。")
-                    continue
+                    return []
                 extracted_texts = openai_client.extract_text_from_images(
                     batch_paths, openai_base_url, openai_api_key, openai_model, translate_to
                 )
-            elif client_type == 'genai': # 取消注释 GenAI 处理分支
+            elif client_type == 'genai':
                 # 调用 GenAI 客户端函数
                 if not genai_api_key:
                     print("错误：GenAI API 密钥未提供。")
-                    continue
+                    return []
                 # 注意：GenAI 不需要 base_url
                 extracted_texts = genai_client.extract_text_from_images(
                     batch_paths, genai_api_key, genai_model, translate_to
                 )
             else:
                 print(f"错误：不支持的客户端类型 '{client_type}'")
-                break # 跳出
-
-            # 将每个提取的文本保存到其对应的文件中
+                return []
+            
+            # 返回批次处理结果，包括图片文件名和提取的文本
+            results = []
             for j, image_file in enumerate(batch):
                 if j < len(extracted_texts):  # 安全检查
-                    text = extracted_texts[j]
-                    
-                    # 只有当文本不为空时才保存文件
-                    if text and text.strip(): # 检查 text 是否为 None 或空字符串
-                        # 创建输出文件名（与输入文件名相同，但扩展名为 .txt）
-                        base_name = os.path.splitext(image_file)[0]
-                        output_file = os.path.join(output_dir, f"{base_name}.txt")
-
-                        # 将提取的文本保存到文件
-                        with open(output_file, 'w', encoding='utf-8') as f:
-                            f.write(text)
-
-                        print(f"提取的文本已保存到 {output_file}")
-                    else:
-                        print(f"图片 {image_file} 未提取到文本或提取失败，跳过保存")
+                    results.append((image_file, extracted_texts[j]))
                 else:
-                     print(f"警告：图片 {image_file} 的提取文本丢失。")
-
+                    print(f"警告：图片 {image_file} 的提取文本丢失。")
+                    results.append((image_file, ""))
+            return results
         except Exception as e:
             print(f"处理批处理时发生未捕获的错误: {str(e)}")
+            return []
+
+    # 创建批次
+    batches = []
+    for i in range(0, len(image_files), bind):
+        batches.append(image_files[i:i+bind])
+    
+    # 使用线程池并发处理批次
+    all_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有批次任务
+        future_to_batch = {executor.submit(process_batch, i, batch): (i, batch) 
+                           for i, batch in enumerate(batches)}
+        
+        # 处理完成的任务
+        for future in concurrent.futures.as_completed(future_to_batch):
+            i, batch = future_to_batch[future]
+            try:
+                # 获取这个批次的结果
+                results = future.result(timeout=timeout)
+                all_results.extend(results)
+                print(f"第 {i+1}/{len(batches)} 批处理完成")
+            except concurrent.futures.TimeoutError:
+                print(f"第 {i+1} 批处理超时")
+            except Exception as e:
+                print(f"处理第 {i+1} 批时发生错误: {str(e)}")
+    
+    # 处理并保存所有结果
+    for image_file, text in all_results:
+        # 只有当文本不为空时才保存文件
+        if text and text.strip():  # 检查 text 是否为 None 或空字符串
+            # 创建输出文件名（与输入文件名相同，但扩展名为 .txt）
+            base_name = os.path.splitext(image_file)[0]
+            output_file = os.path.join(output_dir, f"{base_name}.txt")
+
+            # 将提取的文本保存到文件
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(text)
+
+        else:
+            print(f"图片 {image_file} 未提取到文本或提取失败，跳过保存")
 
 
 def main():
@@ -115,7 +144,9 @@ def main():
         "bind": 10,
         "translateTo": "简体中文",
         "clientType": "openai", # 指定使用哪个客户端 ('openai' 或 'genai')
-        "proxy": "" # 添加代理默认配置
+        "proxy": "", # 添加代理默认配置
+        "max_workers": 5,
+        "timeout": 30
     }
 
     # 从 YAML 配置文件读取参数
@@ -182,7 +213,9 @@ def main():
         config["genai_api_key"],
         config["genai_model"],
         config["bind"],
-        config["translateTo"]
+        config["translateTo"],
+        config["max_workers"],
+        config["timeout"]
     )
 
     print("所有图片处理完成！")
