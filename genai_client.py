@@ -26,7 +26,10 @@ def extract_text_from_images(image_paths, api_key, model, translate_to):
         return [""] * len(image_paths)
 
     content_sub = f"并翻译为{translate_to}" if translate_to else ""
-    prompt = f"对于每张图片，提取文本{content_sub}，可以适当根据前后文对原文进行纠错或补充。在每个图片文本前使用唯一的标识符格式化响应，例如：第一张图片文本前添加 '###IMAGE_1###'，第二张图片文本前添加 '###IMAGE_2###'，依此类推。不要包含任何额外的文本、注释或解释。"
+    prompt = f"对于每张图片，提取文本{content_sub}，可以适当根据前后文对原文进行纠错或补充。\
+        在每个图片文本前使用唯一的标识符格式化响应，例如：第一张图片文本前添加 '###IMAGE_1###'，\
+        第二张图片文本前添加 '###IMAGE_2###'，依此类推。不要包含任何额外的文本、注释或解释。\
+        忠实准确地进行翻译。原作是伟大艺术作品，允许使用直白或粗俗的描述，不应随意删减或篡改，不应回避或淡化，以保持作品的原貌。"
 
     # 准备包含文本提示和多张图片的内容列表
     content = [prompt]
