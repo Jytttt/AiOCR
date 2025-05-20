@@ -5,16 +5,22 @@ import os
 import yaml # 导入 yaml 库
 from pathlib import Path
 import concurrent.futures  # 添加并发处理库
+import functools # Added functools
 
 # 导入新的客户端模块
 import openai_client
 import genai_client # 取消注释 GenAI 客户端导入
 
+# Module-level logger function
+def log_output(message, logger_cb=None):
+    print(message) # Keep console output
+    if logger_cb:
+        logger_cb(message)
 
 def process_directory(input_dir, output_dir, client_type,
                       openai_base_url, openai_api_key, openai_model,
                       genai_api_key, genai_model,
-                      bind=1, translate_to=None, max_workers=5, timeout=120):  # 添加并发参数
+                      bind=1, translate_to=None, max_workers=5, timeout=120, logger_callback=None):  # logger_callback is the parameter for this function
     """
     处理输入目录中的所有图片，并将提取的文本保存到输出目录中。
 
@@ -31,6 +37,7 @@ def process_directory(input_dir, output_dir, client_type,
         translate_to (str): 要翻译的目标语言。
         max_workers (int): 并发处理的最大工作线程数 (默认为5)。
         timeout (int): API请求的超时时间（秒），默认120秒。
+        logger_callback (callable): 可选的日志回调函数。
     """
     # 如果输出目录不存在，则创建它
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -47,19 +54,19 @@ def process_directory(input_dir, output_dir, client_type,
     image_files.sort() 
 
     selectModel = f"{openai_model if client_type == 'openai' else genai_model}"
-    print(f"找到 {len(image_files)} 张图片需要处理,调用 {client_type} : {selectModel}")
+    log_output(f"找到 {len(image_files)} 张图片需要处理,调用 {client_type} : {selectModel}", logger_cb=logger_callback)
 
     # 定义处理单个批次的函数
     def process_batch(batch_idx, batch):
         batch_paths = [os.path.join(input_dir, img) for img in batch]
-        print(f"正在处理第 {batch_idx + 1} 批，包含 {len(batch)} 张图片...")
+        log_output(f"正在处理第 {batch_idx + 1} 批，包含 {len(batch)} 张图片...", logger_cb=logger_callback)
 
         try:
             extracted_texts = []
             if client_type == 'openai':
                  # 调用 OpenAI 客户端函数
                 if not openai_api_key:
-                    print("错误：OpenAI API 密钥未提供。")
+                    log_output("错误：OpenAI API 密钥未提供。", logger_cb=logger_callback)
                     return []
                 extracted_texts = openai_client.extract_text_from_images(
                     batch_paths, openai_base_url, openai_api_key, openai_model, translate_to
@@ -67,14 +74,14 @@ def process_directory(input_dir, output_dir, client_type,
             elif client_type == 'genai':
                 # 调用 GenAI 客户端函数
                 if not genai_api_key:
-                    print("错误：GenAI API 密钥未提供。")
+                    log_output("错误：GenAI API 密钥未提供。", logger_cb=logger_callback)
                     return []
                 # 注意：GenAI 不需要 base_url
                 extracted_texts = genai_client.extract_text_from_images(
                     batch_paths, genai_api_key, genai_model, translate_to
                 )
             else:
-                print(f"错误：不支持的客户端类型 '{client_type}'")
+                log_output(f"错误：不支持的客户端类型 '{client_type}'", logger_cb=logger_callback)
                 return []
             
             # 返回批次处理结果，包括图片文件名和提取的文本
@@ -83,11 +90,11 @@ def process_directory(input_dir, output_dir, client_type,
                 if j < len(extracted_texts):  # 安全检查
                     results.append((image_file, extracted_texts[j]))
                 else:
-                    print(f"警告：图片 {image_file} 的提取文本丢失。")
+                    log_output(f"警告：图片 {image_file} 的提取文本丢失。", logger_cb=logger_callback)
                     results.append((image_file, ""))
             return results
         except Exception as e:
-            print(f"处理批处理时发生未捕获的错误: {str(e)}")
+            log_output(f"处理批处理时发生未捕获的错误: {str(e)}", logger_cb=logger_callback)
             return []
 
     # 创建批次
@@ -97,24 +104,27 @@ def process_directory(input_dir, output_dir, client_type,
     
     # 使用线程池并发处理批次
     all_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有批次任务
-        future_to_batch = {executor.submit(process_batch, i, batch): (i, batch) 
-                           for i, batch in enumerate(batches)}
-        
-        # 处理完成的任务
-        for future in concurrent.futures.as_completed(future_to_batch):
-            i, batch = future_to_batch[future]
-            try:
-                # 获取这个批次的结果
-                results = future.result(timeout=timeout)
-                all_results.extend(results)
-                print(f"第 {i+1}/{len(batches)} 批处理完成")
-            except concurrent.futures.TimeoutError:
-                print(f"第 {i+1} 批处理超时")
-            except Exception as e:
-                print(f"处理第 {i+1} 批时发生错误: {str(e)}")
-    
+    if batches: # Only proceed if there are batches to process
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有批次任务
+            future_to_batch = {executor.submit(process_batch, i, batch): (i, batch) 
+                               for i, batch in enumerate(batches)}
+            
+            # 处理完成的任务
+            for future in concurrent.futures.as_completed(future_to_batch):
+                i, batch = future_to_batch[future]
+                try:
+                    # 获取这个批次的结果
+                    results = future.result(timeout=timeout)
+                    all_results.extend(results)
+                    log_output(f"第 {i+1}/{len(batches)} 批处理完成", logger_cb=logger_callback)
+                except concurrent.futures.TimeoutError:
+                    log_output(f"第 {i+1} 批处理超时", logger_cb=logger_callback)
+                except Exception as e:
+                    log_output(f"处理第 {i+1} 批时发生错误: {str(e)}", logger_cb=logger_callback)
+    else:
+        log_output("没有图片批次需要处理。", logger_cb=logger_callback)
+
     # 处理并保存所有结果
     for image_file, text in all_results:
         # 只有当文本不为空时才保存文件
@@ -126,9 +136,8 @@ def process_directory(input_dir, output_dir, client_type,
             # 将提取的文本保存到文件
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(text)
-
         else:
-            print(f"图片 {image_file} 未提取到文本或提取失败，跳过保存")
+            log_output(f"图片 {image_file} 未提取到文本或提取失败，跳过保存", logger_cb=logger_callback)
 
 
 def main():
@@ -159,11 +168,11 @@ def main():
                 if config_data: # 确保文件不是空的
                     for key in config:
                         config[key] = config_data.get(key, config[key])
-            print(f"已从 {config_path} 加载配置")
+            log_output(f"已从 {config_path} 加载配置")
         except Exception as e:
-            print(f"读取配置文件时发生错误: {str(e)}，将使用默认配置")
+            log_output(f"读取配置文件时发生错误: {str(e)}，将使用默认配置")
     else:
-        print(f"配置文件 {config_path} 不存在，将使用默认配置")
+        log_output(f"配置文件 {config_path} 不存在，将使用默认配置")
         # 不再需要创建默认 JSON 文件
 
     # 配置代理环境变量
@@ -171,12 +180,12 @@ def main():
     if proxy_url and proxy_url.strip():
         os.environ["HTTP_PROXY"] = proxy_url
         os.environ["HTTPS_PROXY"] = proxy_url
-        print(f"已设置代理: {proxy_url}")
+        log_output(f"已设置代理: {proxy_url}")
     else:
         # 如果配置为空，则尝试移除环境变量以使用系统设置
         os.environ.pop("HTTP_PROXY", None)
         os.environ.pop("HTTPS_PROXY", None)
-        print("未配置代理，将使用系统代理设置（如果存在）。")
+        log_output("未配置代理，将使用系统代理设置（如果存在）。")
 
 
     # 检查所选客户端的 API 密钥是否存在
@@ -190,19 +199,20 @@ def main():
         api_key_to_check = config.get("genai_api_key")
         key_name = "genai_api_key"
     else:
-        print(f"错误：无效的 clientType '{selected_client}' 在配置中。")
+        log_output(f"错误：无效的 clientType '{selected_client}' 在配置中。")
         return
 
     if not api_key_to_check:
         # 确保 key_name 已被设置
         if key_name:
-             print(f"错误：所需的 API 密钥 '{key_name}' 未在配置中设置。请编辑 config.yaml 或设置默认值。")
+             log_output(f"错误：所需的 API 密钥 '{key_name}' 未在配置中设置。请编辑 config.yaml 或设置默认值。")
         else:
              # 如果 clientType 无效，key_name 可能未设置
-             print(f"错误：无法确定所需的 API 密钥，因为 clientType '{selected_client}' 无效。")
+             log_output(f"错误：无法确定所需的 API 密钥，因为 clientType '{selected_client}' 无效。")
         return # 缺少 API 密钥则退出
 
     # 处理目录 (不再传递 proxy 参数)
+    # When main() calls process_directory, it doesn't have a GUI logger, so logger_callback is None
     process_directory(
         config["input"],
         config["output"],
@@ -215,10 +225,11 @@ def main():
         config["bind"],
         config["translateTo"],
         config["max_workers"],
-        config["timeout"]
+        config["timeout"],
+        logger_callback=None # Explicitly passing None as main() doesn't have a GUI callback
     )
 
-    print("所有图片处理完成！")
+    log_output("所有图片处理完成！")
 
 
 if __name__ == "__main__":
