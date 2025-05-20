@@ -144,7 +144,13 @@ class AiOCRGui(QWidget):
         self.process_thread = None
 
     def load_config(self):
-        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        if getattr(sys, 'frozen', False):
+            # 如果应用程序是作为捆绑包运行的（例如，由PyInstaller打包）
+            application_path = os.path.dirname(sys.executable)
+        else:
+            # 如果应用程序是作为普通的Python脚本运行的
+            application_path = os.path.dirname(__file__)
+        config_path = os.path.join(application_path, 'config.yaml')
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
@@ -172,7 +178,13 @@ class AiOCRGui(QWidget):
                 print(f'加载配置文件出错: {e}')
 
     def save_config(self):
-        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        if getattr(sys, 'frozen', False):
+            # 如果应用程序是作为捆绑包运行的（例如，由PyInstaller打包）
+            application_path = os.path.dirname(sys.executable)
+        else:
+            # 如果应用程序是作为普通的Python脚本运行的
+            application_path = os.path.dirname(__file__)
+        config_path = os.path.join(application_path, 'config.yaml')
         config_to_save = {
             'input': self.settings.get('input', ''),
             'output': self.settings.get('output', ''),
